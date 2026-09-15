@@ -31,8 +31,25 @@ def test_avg(t: Tensor) -> None:
 @pytest.mark.task4_4
 @given(tensors(shape=(2, 3, 4)))
 def test_max(t: Tensor) -> None:
-    # TODO: Implement for Task 4.4.
-    raise NotImplementedError('Need to implement for Task 4.4')
+    out = minitorch.max(t, 2)
+    for i in range(2):
+        for j in range(3):
+            assert_close(out[i, j, 0], max([t[i, j, k] for k in range(4)]))
+
+    # grad_check needs an input whose max along dim=2 isn't tied (or nearly
+    # tied): argmax puts a 1 at every tied position, so the subgradient at
+    # a tie is genuinely ambiguous, and even a *near* tie breaks the check
+    # since grad_check perturbs by only epsilon=1e-6 - if the top two
+    # values in a row are closer than that, the perturbation can flip
+    # which one is the max and the central-difference estimate stops
+    # approximating any single well-defined derivative. Rejecting such
+    # inputs with `assume` doesn't work here: hypothesis' floats() strategy
+    # for `tensors()` favors simple/duplicate values heavily enough that it
+    # filters out almost every example (a `FailedHealthCheck`). `rand`
+    # draws continuous uniform values, where an exact or near tie has
+    # essentially zero probability, so use a fresh one just for this check
+    # instead of the hypothesis-generated `t` above.
+    minitorch.grad_check(lambda a: minitorch.max(a, 2), minitorch.rand((2, 3, 4)))
 
 
 @pytest.mark.task4_4

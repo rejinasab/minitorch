@@ -19,9 +19,14 @@ from .tensor_functions import Function
 # This code will JIT compile fast versions your tensor_data functions.
 # If you get an error, read the docs for NUMBA as to what is allowed
 # in these functions.
-to_index = njit(inline="always")(to_index)
-index_to_position = njit(inline="always")(index_to_position)
-broadcast_index = njit(inline="always")(broadcast_index)
+#
+# NOTE: plain `njit()`, not `inline="always"` - see the identical note in
+# fast_ops.py. Force-inlining these into the `parallel=True` conv kernels
+# below hits the same numba parfors false positive
+# (`UnsupportedRewriteError: Overwrite of parallel loop index`).
+to_index = njit()(to_index)
+index_to_position = njit()(index_to_position)
+broadcast_index = njit()(broadcast_index)
 
 
 def _tensor_conv1d(
@@ -80,8 +85,26 @@ def _tensor_conv1d(
     s1 = input_strides
     s2 = weight_strides
 
-    # TODO: Implement for Task 4.1.
-    raise NotImplementedError('Need to implement for Task 4.1')
+    for i in prange(out_size):
+        out_index: Index = np.zeros(MAX_DIMS, np.int32)
+        to_index(i, out_shape, out_index)
+        b, oc, ow = out_index[0], out_index[1], out_index[2]
+        acc = 0.0
+        for ic in range(in_channels):
+            for k in range(kw):
+                # `reverse=False` anchors the weight's k=0 tap at the
+                # output position (weight extends to the right, i.e.
+                # standard "left-anchored" cross-correlation); `reverse=True`
+                # flips it so k=0 anchors at the output position but the
+                # weight extends to the left.
+                iw = ow + k if not reverse else ow - k
+                if iw < 0 or iw >= width:
+                    continue
+                in_pos = b * s1[0] + ic * s1[1] + iw * s1[2]
+                w_pos = oc * s2[0] + ic * s2[1] + k * s2[2]
+                acc += input[in_pos] * weight[w_pos]
+        out_pos = index_to_position(out_index, out_strides)
+        out[out_pos] = acc
 
 
 tensor_conv1d = njit(parallel=True)(_tensor_conv1d)
@@ -206,8 +229,29 @@ def _tensor_conv2d(
     s10, s11, s12, s13 = s1[0], s1[1], s1[2], s1[3]
     s20, s21, s22, s23 = s2[0], s2[1], s2[2], s2[3]
 
-    # TODO: Implement for Task 4.2.
-    raise NotImplementedError('Need to implement for Task 4.2')
+    for i in prange(out_size):
+        out_index: Index = np.zeros(MAX_DIMS, np.int32)
+        to_index(i, out_shape, out_index)
+        b, oc, oh, ow = out_index[0], out_index[1], out_index[2], out_index[3]
+        acc = 0.0
+        for ic in range(in_channels):
+            for dh in range(kh):
+                for dw in range(kw):
+                    # Same left/right (here top-left/bottom-right) anchoring
+                    # convention as conv1d - see the comment there.
+                    if not reverse:
+                        ih = oh + dh
+                        iw = ow + dw
+                    else:
+                        ih = oh - dh
+                        iw = ow - dw
+                    if ih < 0 or ih >= height or iw < 0 or iw >= width:
+                        continue
+                    in_pos = b * s10 + ic * s11 + ih * s12 + iw * s13
+                    w_pos = oc * s20 + ic * s21 + dh * s22 + dw * s23
+                    acc += input[in_pos] * weight[w_pos]
+        out_pos = index_to_position(out_index, out_strides)
+        out[out_pos] = acc
 
 
 tensor_conv2d = njit(parallel=True, fastmath=True)(_tensor_conv2d)
